@@ -118,10 +118,6 @@ public final class Client: Sendable {
                 }
             }
         default:
-            if T.self == Bool.self {
-                return false as! T
-            }
-
             if let errorDetail = try? JSONDecoder().decode(ErrorResponse.self, from: data) {
                 throw Error.responseError(response: httpResponse, detail: errorDetail.error)
             }
@@ -146,6 +142,7 @@ public final class Client: Sendable {
 
                 do {
                     let request = try createRequest(method, path, params: params)
+#if canImport(Darwin)
                     let (bytes, response) = try await session.bytes(for: request)
                     let httpResponse = try validateResponse(response)
 
@@ -187,7 +184,52 @@ public final class Client: Sendable {
                         }
                     }
 
+                    if !buffer.isEmpty {
+                        let decoded = try decoder.decode(T.self, from: buffer)
+                        continuation.yield(decoded)
+                    }
+
                     continuation.finish()
+#else
+                    let (data, response) = try await session.data(for: request)
+                    let httpResponse = try validateResponse(response)
+
+                    guard (200..<300).contains(httpResponse.statusCode) else {
+                        if let errorDetail = try? decoder.decode(
+                            ErrorResponse.self, from: data)
+                        {
+                            throw Error.responseError(
+                                response: httpResponse, detail: errorDetail.error)
+                        }
+
+                        if let string = String(data: data, encoding: .utf8) {
+                            throw Error.responseError(response: httpResponse, detail: string)
+                        }
+
+                        throw Error.responseError(
+                            response: httpResponse, detail: "Invalid response")
+                    }
+
+                    if !data.isEmpty {
+                        var buffer = data
+                        while let newlineIndex = buffer.firstIndex(of: UInt8(ascii: "\n")) {
+                            let chunk = buffer[..<newlineIndex]
+                            buffer = buffer[buffer.index(after: newlineIndex)...]
+
+                            if !chunk.isEmpty {
+                                let decoded = try decoder.decode(T.self, from: chunk)
+                                continuation.yield(decoded)
+                            }
+                        }
+
+                        if !buffer.isEmpty {
+                            let decoded = try decoder.decode(T.self, from: buffer)
+                            continuation.yield(decoded)
+                        }
+                    }
+
+                    continuation.finish()
+#endif
                 } catch {
                     continuation.finish(throwing: error)
                 }
@@ -466,7 +508,7 @@ extension Client {
             params["template"] = .string(template)
         }
         if let context = context {
-            params["context"] = .array(context.map { .double(Double($0)) })
+            params["context"] = .array(context.map { .int($0) })
         }
         if let think = think {
             params["think"] = .bool(think)
@@ -720,7 +762,7 @@ extension Client {
         ]
 
         if let dimensions = dimensions {
-            params["dimensions"] = .double(Double(dimensions))
+            params["dimensions"] = .int(dimensions)
         }
         if let options = options {
             params["options"] = .object(options)
@@ -758,7 +800,7 @@ extension Client {
         ]
 
         if let dimensions = dimensions {
-            params["dimensions"] = .double(Double(dimensions))
+            params["dimensions"] = .int(dimensions)
         }
         if let options = options {
             params["options"] = .object(options)
