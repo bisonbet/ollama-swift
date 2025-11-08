@@ -41,8 +41,10 @@ All notable changes to the ollama-swift library are documented in this file.
 
 - **OpenAI API Compatibility Layer**: Full OpenAI-compatible client implementation
   - New `OpenAICompatibleClient` class
-  - Compatible with `/v1/chat/completions` endpoint
-  - Compatible with `/v1/completions` endpoint
+  - Compatible with `/v1/chat/completions` endpoint (streaming and non-streaming)
+  - Compatible with `/v1/completions` endpoint (streaming and non-streaming)
+  - Streaming support with `createChatCompletionStream()` and `createCompletionStream()`
+  - Proper validation: non-streaming methods reject `stream: true` with clear error messages
   - Drop-in replacement for OpenAI client code
   - Enables easy migration from OpenAI to local models
 
@@ -162,7 +164,7 @@ try await client.createModel(name: "my-model", modelfile: modelfile)
 // Create OpenAI-compatible client
 let openAIClient = OpenAICompatibleClient.default
 
-// Use OpenAI-style chat completions
+// Non-streaming chat completions
 let request = OpenAICompatibleClient.ChatCompletionRequest(
     model: "llama3.2",
     messages: [
@@ -173,7 +175,19 @@ let request = OpenAICompatibleClient.ChatCompletionRequest(
 
 let response = try await openAIClient.createChatCompletion(request)
 print(response.choices.first?.message.content ?? "")
+
+// Streaming chat completions
+let stream = openAIClient.createChatCompletionStream(request)
+for try await chunk in stream {
+    if let choice = chunk.choices.first {
+        print(choice.message.content, terminator: "")
+    }
+}
 ```
+
+**Important:** The `stream` parameter in request objects is handled automatically:
+- Non-streaming methods (`createChatCompletion`, `createCompletion`) reject `stream: true` with a clear error
+- Streaming methods (`createChatCompletionStream`, `createCompletionStream`) automatically set `stream: true`
 
 ### Technical Details
 
@@ -196,6 +210,12 @@ print(response.choices.first?.message.content ?? "")
 - `pullModelStream(_:insecure:) -> AsyncThrowingStream<PullProgress, Error>`
 - `pushModelStream(_:insecure:) -> AsyncThrowingStream<PushProgress, Error>`
 - `createModelStream(name:modelfile:path:quantization:) -> AsyncThrowingStream<CreateProgress, Error>`
+
+**OpenAICompatibleClient:**
+- `createChatCompletion(_:) async throws -> ChatCompletionResponse` (validates no streaming)
+- `createChatCompletionStream(_:) -> AsyncThrowingStream<ChatCompletionResponse, Error>`
+- `createCompletion(_:) async throws -> CompletionResponse` (validates no streaming)
+- `createCompletionStream(_:) -> AsyncThrowingStream<CompletionResponse, Error>`
 
 **Modified Method Signatures:**
 - `generate()`: Added `suffix: String? = nil` parameter

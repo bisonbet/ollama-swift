@@ -861,6 +861,36 @@ do {
 }
 ```
 
+#### Streaming Chat Completions
+
+Stream responses in real-time:
+
+```swift
+do {
+    let request = OpenAICompatibleClient.ChatCompletionRequest(
+        model: "llama3.2",
+        messages: [
+            .system("You are a helpful assistant."),
+            .user("Write a story about a Swift developer.")
+        ]
+    )
+
+    let stream = openAIClient.createChatCompletionStream(request)
+
+    var fullResponse = ""
+    for try await chunk in stream {
+        if let choice = chunk.choices.first,
+           !choice.message.content.isEmpty {
+            print(choice.message.content, terminator: "")
+            fullResponse += choice.message.content
+        }
+    }
+    print("\n\nComplete response: \(fullResponse)")
+} catch {
+    print("Error: \(error)")
+}
+```
+
 ### Text Completions
 
 ```swift
@@ -881,6 +911,37 @@ do {
     print("Error: \(error)")
 }
 ```
+
+#### Streaming Text Completions
+
+Stream completions as they're generated:
+
+```swift
+do {
+    let request = OpenAICompatibleClient.CompletionRequest(
+        model: "codellama:7b-code",
+        prompt: "def fibonacci(n):",
+        temperature: 0.7
+    )
+
+    let stream = openAIClient.createCompletionStream(request)
+
+    var fullText = ""
+    for try await chunk in stream {
+        if let choice = chunk.choices.first {
+            print(choice.text, terminator: "")
+            fullText += choice.text
+        }
+    }
+    print("\n\nComplete text: \(fullText)")
+} catch {
+    print("Error: \(error)")
+}
+```
+
+> **Note:** The `stream` parameter in request objects is handled automatically:
+> - For `createChatCompletion()` and `createCompletion()`, streaming is disabled (setting `stream: true` will throw an error)
+> - For `createChatCompletionStream()` and `createCompletionStream()`, streaming is enabled automatically
 
 ### Migration from OpenAI
 

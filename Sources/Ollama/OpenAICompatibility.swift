@@ -68,7 +68,7 @@ extension OpenAICompatibleClient {
         /// Additional model parameters.
         public let options: [String: Value]?
         /// Whether to stream the response.
-        public let stream: Bool?
+        public var stream: Bool?
         /// Controls how long the model stays loaded.
         public let keepAlive: KeepAlive?
 
@@ -189,10 +189,17 @@ extension OpenAICompatibleClient {
     ///
     /// - Parameter request: The chat completion request.
     /// - Returns: A `ChatCompletionResponse` containing the completion.
-    /// - Throws: An error if the request fails or the response cannot be decoded.
+    /// - Throws: An error if the request fails, the response cannot be decoded, or if streaming is requested (use `createChatCompletionStream` instead).
     public func createChatCompletion(
         _ request: ChatCompletionRequest
     ) async throws -> ChatCompletionResponse {
+        // Validate that streaming is not requested for this non-streaming method
+        if request.stream == true {
+            throw Client.Error.requestError(
+                "Streaming is not supported by this method. Use createChatCompletionStream() instead."
+            )
+        }
+
         let url = host.appendingPathComponent("chat/completions")
         var urlRequest = URLRequest(url: url)
         urlRequest.httpMethod = "POST"
@@ -223,6 +230,95 @@ extension OpenAICompatibleClient {
 
         return try decoder.decode(ChatCompletionResponse.self, from: data)
     }
+
+    /// Creates a streaming chat completion using the OpenAI-compatible endpoint.
+    ///
+    /// - Parameter request: The chat completion request (stream parameter is automatically set to true).
+    /// - Returns: An async throwing stream of `ChatCompletionResponse` objects containing completion chunks.
+    /// - Throws: An error if the request fails or responses cannot be decoded.
+    public func createChatCompletionStream(
+        _ request: ChatCompletionRequest
+    ) -> AsyncThrowingStream<ChatCompletionResponse, Swift.Error> {
+        AsyncThrowingStream { continuation in
+            let task = Task {
+                let decoder = JSONDecoder()
+                decoder.dateDecodingStrategy = .iso8601WithFractionalSeconds
+
+                do {
+                    // Create a new request with streaming enabled
+                    var streamRequest = request
+                    streamRequest.stream = true
+
+                    let url = host.appendingPathComponent("chat/completions")
+                    var urlRequest = URLRequest(url: url)
+                    urlRequest.httpMethod = "POST"
+                    urlRequest.addValue("application/json", forHTTPHeaderField: "Content-Type")
+                    urlRequest.addValue("application/json", forHTTPHeaderField: "Accept")
+
+                    if let userAgent {
+                        urlRequest.addValue(userAgent, forHTTPHeaderField: "User-Agent")
+                    }
+
+                    let encoder = JSONEncoder()
+                    urlRequest.httpBody = try encoder.encode(streamRequest)
+
+                    let (bytes, response) = try await session.bytes(for: urlRequest)
+                    guard let httpResponse = response as? HTTPURLResponse else {
+                        throw Client.Error.unexpectedError("Response is not HTTPURLResponse")
+                    }
+
+                    guard (200..<300).contains(httpResponse.statusCode) else {
+                        var errorData = Data()
+                        for try await byte in bytes {
+                            errorData.append(byte)
+                        }
+                        if let errorString = String(data: errorData, encoding: .utf8) {
+                            throw Client.Error.responseError(response: httpResponse, detail: errorString)
+                        }
+                        throw Client.Error.responseError(response: httpResponse, detail: "Unknown error")
+                    }
+
+                    var buffer = Data()
+
+                    for try await byte in bytes {
+                        buffer.append(byte)
+
+                        // Look for newline to separate JSON objects
+                        while let newlineIndex = buffer.firstIndex(of: UInt8(ascii: "\n")) {
+                            let chunk = buffer[..<newlineIndex]
+                            buffer = buffer[buffer.index(after: newlineIndex)...]
+
+                            if !chunk.isEmpty {
+                                // Skip "data: " prefix if present (SSE format)
+                                var jsonData = chunk
+                                if let dataPrefix = "data: ".data(using: .utf8),
+                                   chunk.starts(with: dataPrefix) {
+                                    jsonData = chunk.dropFirst(dataPrefix.count)
+                                }
+
+                                // Skip [DONE] message
+                                if let doneMessage = "[DONE]".data(using: .utf8),
+                                   jsonData.starts(with: doneMessage) {
+                                    continue
+                                }
+
+                                let decoded = try decoder.decode(ChatCompletionResponse.self, from: jsonData)
+                                continuation.yield(decoded)
+                            }
+                        }
+                    }
+
+                    continuation.finish()
+                } catch {
+                    continuation.finish(throwing: error)
+                }
+            }
+
+            continuation.onTermination = { _ in
+                task.cancel()
+            }
+        }
+    }
 }
 
 // MARK: - Completions
@@ -241,7 +337,7 @@ extension OpenAICompatibleClient {
         /// Temperature for sampling.
         public let temperature: Double?
         /// Whether to stream the response.
-        public let stream: Bool?
+        public var stream: Bool?
 
         private enum CodingKeys: String, CodingKey {
             case model
@@ -322,10 +418,17 @@ extension OpenAICompatibleClient {
     ///
     /// - Parameter request: The completion request.
     /// - Returns: A `CompletionResponse` containing the completion.
-    /// - Throws: An error if the request fails or the response cannot be decoded.
+    /// - Throws: An error if the request fails, the response cannot be decoded, or if streaming is requested (use `createCompletionStream` instead).
     public func createCompletion(
         _ request: CompletionRequest
     ) async throws -> CompletionResponse {
+        // Validate that streaming is not requested for this non-streaming method
+        if request.stream == true {
+            throw Client.Error.requestError(
+                "Streaming is not supported by this method. Use createCompletionStream() instead."
+            )
+        }
+
         let url = host.appendingPathComponent("completions")
         var urlRequest = URLRequest(url: url)
         urlRequest.httpMethod = "POST"
@@ -355,5 +458,94 @@ extension OpenAICompatibleClient {
         decoder.dateDecodingStrategy = .iso8601WithFractionalSeconds
 
         return try decoder.decode(CompletionResponse.self, from: data)
+    }
+
+    /// Creates a streaming text completion using the OpenAI-compatible endpoint.
+    ///
+    /// - Parameter request: The completion request (stream parameter is automatically set to true).
+    /// - Returns: An async throwing stream of `CompletionResponse` objects containing completion chunks.
+    /// - Throws: An error if the request fails or responses cannot be decoded.
+    public func createCompletionStream(
+        _ request: CompletionRequest
+    ) -> AsyncThrowingStream<CompletionResponse, Swift.Error> {
+        AsyncThrowingStream { continuation in
+            let task = Task {
+                let decoder = JSONDecoder()
+                decoder.dateDecodingStrategy = .iso8601WithFractionalSeconds
+
+                do {
+                    // Create a new request with streaming enabled
+                    var streamRequest = request
+                    streamRequest.stream = true
+
+                    let url = host.appendingPathComponent("completions")
+                    var urlRequest = URLRequest(url: url)
+                    urlRequest.httpMethod = "POST"
+                    urlRequest.addValue("application/json", forHTTPHeaderField: "Content-Type")
+                    urlRequest.addValue("application/json", forHTTPHeaderField: "Accept")
+
+                    if let userAgent {
+                        urlRequest.addValue(userAgent, forHTTPHeaderField: "User-Agent")
+                    }
+
+                    let encoder = JSONEncoder()
+                    urlRequest.httpBody = try encoder.encode(streamRequest)
+
+                    let (bytes, response) = try await session.bytes(for: urlRequest)
+                    guard let httpResponse = response as? HTTPURLResponse else {
+                        throw Client.Error.unexpectedError("Response is not HTTPURLResponse")
+                    }
+
+                    guard (200..<300).contains(httpResponse.statusCode) else {
+                        var errorData = Data()
+                        for try await byte in bytes {
+                            errorData.append(byte)
+                        }
+                        if let errorString = String(data: errorData, encoding: .utf8) {
+                            throw Client.Error.responseError(response: httpResponse, detail: errorString)
+                        }
+                        throw Client.Error.responseError(response: httpResponse, detail: "Unknown error")
+                    }
+
+                    var buffer = Data()
+
+                    for try await byte in bytes {
+                        buffer.append(byte)
+
+                        // Look for newline to separate JSON objects
+                        while let newlineIndex = buffer.firstIndex(of: UInt8(ascii: "\n")) {
+                            let chunk = buffer[..<newlineIndex]
+                            buffer = buffer[buffer.index(after: newlineIndex)...]
+
+                            if !chunk.isEmpty {
+                                // Skip "data: " prefix if present (SSE format)
+                                var jsonData = chunk
+                                if let dataPrefix = "data: ".data(using: .utf8),
+                                   chunk.starts(with: dataPrefix) {
+                                    jsonData = chunk.dropFirst(dataPrefix.count)
+                                }
+
+                                // Skip [DONE] message
+                                if let doneMessage = "[DONE]".data(using: .utf8),
+                                   jsonData.starts(with: doneMessage) {
+                                    continue
+                                }
+
+                                let decoded = try decoder.decode(CompletionResponse.self, from: jsonData)
+                                continuation.yield(decoded)
+                            }
+                        }
+                    }
+
+                    continuation.finish()
+                } catch {
+                    continuation.finish(throwing: error)
+                }
+            }
+
+            continuation.onTermination = { _ in
+                task.cancel()
+            }
+        }
     }
 }
