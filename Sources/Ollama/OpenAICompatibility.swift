@@ -58,7 +58,7 @@ public final class OpenAICompatibleClient: Sendable {
 
 extension OpenAICompatibleClient {
     /// Represents a chat completion request in OpenAI format.
-    public struct ChatCompletionRequest: Codable, Sendable {
+    public struct ChatCompletionRequest: Encodable, Sendable {
         /// The model to use for generation.
         public let model: String
         /// The messages of the chat.
@@ -95,6 +95,19 @@ extension OpenAICompatibleClient {
             self.options = options
             self.stream = stream
             self.keepAlive = keepAlive
+        }
+
+        public func encode(to encoder: Encoder) throws {
+            var container = encoder.container(keyedBy: CodingKeys.self)
+            try container.encode(model, forKey: .model)
+            try container.encode(messages, forKey: .messages)
+            try container.encodeIfPresent(format, forKey: .format)
+            try container.encodeIfPresent(options, forKey: .options)
+            try container.encodeIfPresent(stream, forKey: .stream)
+
+            if let keepAliveValue = keepAlive?.value {
+                try container.encode(keepAliveValue, forKey: .keepAlive)
+            }
         }
     }
 
