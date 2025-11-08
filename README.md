@@ -495,6 +495,32 @@ let response2 = try await client.chat(
 )
 ```
 
+### Fill-in-the-Middle Code Completion
+
+Use the `suffix` parameter for code completion where you provide both the beginning and end of the code:
+
+```swift
+do {
+    let response = try await client.generate(
+        model: "codellama:7b-code",
+        prompt: "def convert_string_to_uppercase(string: str) -> str:",
+        suffix: "    return result",
+        options: [
+            "temperature": 0,
+            "stop": ["<EOT>"]
+        ]
+    )
+    print(response.response)
+} catch {
+    print("Error: \(error)")
+}
+```
+
+This is particularly useful for:
+- Code completion in IDEs
+- Infilling code between existing lines
+- Smart autocomplete features
+
 ### Generating embeddings
 
 Generate embeddings for a given text:
@@ -535,6 +561,18 @@ do {
 }
 ```
 
+#### Custom Embedding Dimensions
+
+Some models support custom embedding dimensions for greater control:
+
+```swift
+let response = try await client.embed(
+    model: "nomic-embed-text",
+    input: "Your text here",
+    dimensions: 512  // Customize the output dimensions
+)
+```
+
 ### Managing models
 
 #### Listing models
@@ -567,6 +605,18 @@ do {
 }
 ```
 
+Get verbose model information with full data:
+
+```swift
+do {
+    let modelInfo = try await client.showModel("llama3.2", verbose: true)
+    // Returns more detailed information including full token data
+    print("Detailed info: \(modelInfo.info)")
+} catch {
+    print("Error: \(error)")
+}
+```
+
 #### Pulling a model
 
 Download a model from the Ollama library:
@@ -579,6 +629,25 @@ do {
     } else {
         print("Failed to pull model")
     }
+} catch {
+    print("Error: \(error)")
+}
+```
+
+Monitor pull progress with streaming:
+
+```swift
+do {
+    let stream = client.pullModelStream("llama3.2")
+
+    for try await progress in stream {
+        print("Status: \(progress.status)")
+        if let completed = progress.completed, let total = progress.total {
+            let percentage = (Double(completed) / Double(total)) * 100
+            print("Progress: \(String(format: "%.1f", percentage))%")
+        }
+    }
+    print("Model pull complete!")
 } catch {
     print("Error: \(error)")
 }
@@ -598,6 +667,408 @@ do {
     print("Error: \(error)")
 }
 ```
+
+Monitor push progress with streaming:
+
+```swift
+do {
+    let stream = client.pushModelStream("mynamespace/mymodel:latest")
+
+    for try await progress in stream {
+        print("Status: \(progress.status)")
+        if let completed = progress.completed, let total = progress.total {
+            let percentage = (Double(completed) / Double(total)) * 100
+            print("Upload Progress: \(String(format: "%.1f", percentage))%")
+        }
+    }
+    print("Model push complete!")
+} catch {
+    print("Error: \(error)")
+}
+```
+
+### Creating Custom Models
+
+#### Basic Model Creation
+
+Create a custom model from a Modelfile:
+
+```swift
+do {
+    let modelfile = """
+    FROM llama3.2
+    SYSTEM You are a helpful coding assistant specialized in Swift.
+    """
+
+    let success = try await client.createModel(
+        name: "swift-assistant",
+        modelfile: modelfile
+    )
+
+    if success {
+        print("Model created successfully!")
+    }
+} catch {
+    print("Error: \(error)")
+}
+```
+
+#### Model Quantization
+
+Create a quantized version of a model for reduced memory usage:
+
+```swift
+do {
+    let success = try await client.createModel(
+        name: "llama3.2-q4",
+        modelfile: "FROM llama3.2",
+        quantization: "q4_0"  // Options: q4_0, q4_1, q5_0, q5_1, q8_0
+    )
+
+    if success {
+        print("Quantized model created!")
+    }
+} catch {
+    print("Error: \(error)")
+}
+```
+
+Supported quantization levels:
+- `q4_0` - 4-bit quantization (smallest, fastest)
+- `q4_1` - 4-bit quantization (better quality)
+- `q5_0` - 5-bit quantization
+- `q5_1` - 5-bit quantization (better quality)
+- `q8_0` - 8-bit quantization (larger, best quality)
+
+#### Monitor Model Creation Progress
+
+```swift
+do {
+    let stream = client.createModelStream(
+        name: "my-custom-model",
+        modelfile: "FROM llama3.2\nSYSTEM You are helpful."
+    )
+
+    for try await progress in stream {
+        print("Status: \(progress.status)")
+    }
+    print("Model creation complete!")
+} catch {
+    print("Error: \(error)")
+}
+```
+
+### Blob Operations
+
+Blobs are used for uploading custom model files (GGUF, Safetensors) when creating models.
+
+#### Check if a Blob Exists
+
+```swift
+do {
+    let digest = "sha256:abc123..."
+    let exists = try await client.checkBlob(digest: digest)
+
+    if exists {
+        print("Blob already exists on server")
+    } else {
+        print("Blob needs to be uploaded")
+    }
+} catch {
+    print("Error: \(error)")
+}
+```
+
+#### Upload a Blob
+
+```swift
+import CryptoKit
+
+do {
+    // Load your model file
+    let modelData = try Data(contentsOf: URL(fileURLWithPath: "/path/to/model.gguf"))
+
+    // Calculate SHA256 digest
+    let hash = SHA256.hash(data: modelData)
+    let digest = "sha256:" + hash.compactMap { String(format: "%02x", $0) }.joined()
+
+    // Check if blob already exists
+    if try await client.checkBlob(digest: digest) {
+        print("Blob already exists, skipping upload")
+    } else {
+        // Upload the blob
+        let success = try await client.createBlob(digest: digest, data: modelData)
+        if success {
+            print("Blob uploaded successfully!")
+        }
+    }
+
+    // Now reference the blob in a Modelfile
+    let modelfile = """
+    FROM \(digest)
+    SYSTEM You are a helpful assistant.
+    """
+
+    try await client.createModel(name: "my-custom-model", modelfile: modelfile)
+} catch {
+    print("Error: \(error)")
+}
+```
+
+## OpenAI API Compatibility
+
+Ollama-swift includes full support for the OpenAI-compatible API endpoints, allowing you to use this library as a drop-in replacement for OpenAI client code when working with local models.
+
+### Using the OpenAI-Compatible Client
+
+```swift
+import Ollama
+
+// Create an OpenAI-compatible client
+let openAIClient = OpenAICompatibleClient.default
+
+// Or with custom configuration
+let customClient = OpenAICompatibleClient(
+    host: URL(string: "http://localhost:11434/v1")!,
+    userAgent: "MyApp/1.0"
+)
+```
+
+### Chat Completions
+
+```swift
+do {
+    let request = OpenAICompatibleClient.ChatCompletionRequest(
+        model: "llama3.2",
+        messages: [
+            .system("You are a helpful assistant."),
+            .user("Write a haiku about Swift programming.")
+        ]
+    )
+
+    let response = try await openAIClient.createChatCompletion(request)
+
+    if let firstChoice = response.choices.first {
+        print(firstChoice.message.content)
+    }
+
+    // Access usage statistics
+    if let usage = response.usage {
+        print("Tokens used: \(usage.totalTokens)")
+    }
+} catch {
+    print("Error: \(error)")
+}
+```
+
+### Text Completions
+
+```swift
+do {
+    let request = OpenAICompatibleClient.CompletionRequest(
+        model: "codellama:7b-code",
+        prompt: "def fibonacci(n):",
+        suffix: "    return result",
+        temperature: 0.7
+    )
+
+    let response = try await openAIClient.createCompletion(request)
+
+    if let firstChoice = response.choices.first {
+        print(firstChoice.text)
+    }
+} catch {
+    print("Error: \(error)")
+}
+```
+
+### Migration from OpenAI
+
+If you have existing code using OpenAI's API, you can easily migrate to Ollama by:
+
+1. Replace your OpenAI client initialization with `OpenAICompatibleClient`
+2. Change the base URL to point to your Ollama instance
+3. Use local model names instead of OpenAI model names
+
+```swift
+// Before (OpenAI)
+// let client = OpenAI(apiKey: "...")
+
+// After (Ollama)
+let client = OpenAICompatibleClient.default
+
+// The rest of your code can remain largely the same!
+```
+
+## Integration Guide
+
+### iOS/macOS App Integration
+
+1. **Add the package dependency** to your Xcode project
+2. **Import the framework** in your Swift files:
+   ```swift
+   import Ollama
+   ```
+
+3. **Initialize the client** (preferably as a singleton):
+   ```swift
+   class OllamaService {
+       static let shared = OllamaService()
+       let client = Client.default
+
+       private init() {}
+   }
+   ```
+
+4. **Make async calls** from your UI code:
+   ```swift
+   Task {
+       do {
+           let response = try await OllamaService.shared.client.chat(
+               model: "llama3.2",
+               messages: [.user("Hello!")]
+           )
+           await MainActor.run {
+               // Update UI with response
+           }
+       } catch {
+           print("Error: \(error)")
+       }
+   }
+   ```
+
+### SwiftUI Integration Example
+
+```swift
+import SwiftUI
+import Ollama
+
+struct ContentView: View {
+    @State private var messages: [Chat.Message] = []
+    @State private var inputText = ""
+    @State private var isLoading = false
+
+    let client = Client.default
+
+    var body: some View {
+        VStack {
+            ScrollView {
+                ForEach(messages.indices, id: \.self) { index in
+                    MessageRow(message: messages[index])
+                }
+            }
+
+            HStack {
+                TextField("Type a message...", text: $inputText)
+                    .textFieldStyle(.roundedBorder)
+
+                Button("Send") {
+                    sendMessage()
+                }
+                .disabled(isLoading || inputText.isEmpty)
+            }
+            .padding()
+        }
+    }
+
+    func sendMessage() {
+        let userMessage = Chat.Message.user(inputText)
+        messages.append(userMessage)
+        inputText = ""
+        isLoading = true
+
+        Task {
+            do {
+                var allMessages = messages
+
+                let response = try await client.chat(
+                    model: "llama3.2",
+                    messages: allMessages
+                )
+
+                await MainActor.run {
+                    messages.append(response.message)
+                    isLoading = false
+                }
+            } catch {
+                await MainActor.run {
+                    isLoading = false
+                }
+                print("Error: \(error)")
+            }
+        }
+    }
+}
+
+struct MessageRow: View {
+    let message: Chat.Message
+
+    var body: some View {
+        HStack {
+            if message.role == .user {
+                Spacer()
+            }
+
+            Text(message.content)
+                .padding()
+                .background(message.role == .user ? Color.blue : Color.gray)
+                .foregroundColor(.white)
+                .cornerRadius(10)
+
+            if message.role == .assistant {
+                Spacer()
+            }
+        }
+        .padding(.horizontal)
+    }
+}
+```
+
+### Server-Side Swift Integration
+
+```swift
+import Vapor
+import Ollama
+
+func routes(_ app: Application) throws {
+    let ollamaClient = Client.default
+
+    app.post("chat") { req async throws -> Response in
+        struct ChatRequest: Content {
+            let message: String
+        }
+
+        let chatRequest = try req.content.decode(ChatRequest.self)
+
+        let response = try await ollamaClient.chat(
+            model: "llama3.2",
+            messages: [.user(chatRequest.message)]
+        )
+
+        return Response(
+            status: .ok,
+            body: .init(string: response.message.content)
+        )
+    }
+}
+```
+
+### Best Practices
+
+1. **Reuse the client instance** - Create one client and reuse it throughout your app
+2. **Handle errors gracefully** - Network requests can fail, always use try-catch
+3. **Use streaming for long responses** - Provide better UX with real-time updates
+4. **Set appropriate timeouts** - Some operations can take time
+5. **Use keep-alive strategically** - Balance memory usage and response time
+6. **Monitor progress** - Use streaming methods for pull/push/create operations
+
+### Performance Tips
+
+1. **Use appropriate quantization levels** for your use case
+2. **Batch embeddings requests** when processing multiple texts
+3. **Keep models loaded** with `keepAlive` for frequently-used models
+4. **Use local models** to avoid network latency
+5. **Stream responses** for better perceived performance
 
 ## License
 
