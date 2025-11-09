@@ -118,10 +118,6 @@ public final class Client: Sendable {
                 }
             }
         default:
-            if T.self == Bool.self {
-                return false as! T
-            }
-
             if let errorDetail = try? JSONDecoder().decode(ErrorResponse.self, from: data) {
                 throw Error.responseError(response: httpResponse, detail: errorDetail.error)
             }
@@ -146,6 +142,7 @@ public final class Client: Sendable {
 
                 do {
                     let request = try createRequest(method, path, params: params)
+#if canImport(Darwin)
                     let (bytes, response) = try await session.bytes(for: request)
                     let httpResponse = try validateResponse(response)
 
@@ -187,7 +184,52 @@ public final class Client: Sendable {
                         }
                     }
 
+                    if !buffer.isEmpty {
+                        let decoded = try decoder.decode(T.self, from: buffer)
+                        continuation.yield(decoded)
+                    }
+
                     continuation.finish()
+#else
+                    let (data, response) = try await session.data(for: request)
+                    let httpResponse = try validateResponse(response)
+
+                    guard (200..<300).contains(httpResponse.statusCode) else {
+                        if let errorDetail = try? decoder.decode(
+                            ErrorResponse.self, from: data)
+                        {
+                            throw Error.responseError(
+                                response: httpResponse, detail: errorDetail.error)
+                        }
+
+                        if let string = String(data: data, encoding: .utf8) {
+                            throw Error.responseError(response: httpResponse, detail: string)
+                        }
+
+                        throw Error.responseError(
+                            response: httpResponse, detail: "Invalid response")
+                    }
+
+                    if !data.isEmpty {
+                        var buffer = data
+                        while let newlineIndex = buffer.firstIndex(of: UInt8(ascii: "\n")) {
+                            let chunk = buffer[..<newlineIndex]
+                            buffer = buffer[buffer.index(after: newlineIndex)...]
+
+                            if !chunk.isEmpty {
+                                let decoded = try decoder.decode(T.self, from: chunk)
+                                continuation.yield(decoded)
+                            }
+                        }
+
+                        if !buffer.isEmpty {
+                            let decoded = try decoder.decode(T.self, from: buffer)
+                            continuation.yield(decoded)
+                        }
+                    }
+
+                    continuation.finish()
+#endif
                 } catch {
                     continuation.finish(throwing: error)
                 }
@@ -332,6 +374,7 @@ extension Client {
     /// - Parameters:
     ///   - model: The name of the model to use for generation.
     ///   - prompt: The prompt to generate a response for.
+    ///   - suffix: The text that comes after the generated text. Used for fill-in-the-middle code completion.
     ///   - images: Optional list of base64-encoded images (for multimodal models).
     ///   - format: Optional format specification. Can be either a string ("json") or a JSON schema to constrain the model's output.
     ///   - options: Additional model parameters as specified in the Modelfile documentation.
@@ -346,6 +389,7 @@ extension Client {
     public func generate(
         model: Model.ID,
         prompt: String,
+        suffix: String? = nil,
         images: [Data]? = nil,
         format: Value? = nil,
         options: [String: Value]? = nil,
@@ -359,6 +403,7 @@ extension Client {
         let params = createGenerateParams(
             model: model,
             prompt: prompt,
+            suffix: suffix,
             images: images,
             format: format,
             options: options,
@@ -378,6 +423,7 @@ extension Client {
     /// - Parameters:
     ///   - model: The name of the model to use for generation.
     ///   - prompt: The prompt to generate a response for.
+    ///   - suffix: The text that comes after the generated text. Used for fill-in-the-middle code completion.
     ///   - images: Optional list of base64-encoded images (for multimodal models).
     ///   - format: The format to return a response in. Currently, the only accepted value is "json".
     ///   - options: Additional model parameters as specified in the Modelfile documentation.
@@ -392,6 +438,7 @@ extension Client {
     public func generateStream(
         model: Model.ID,
         prompt: String,
+        suffix: String? = nil,
         images: [Data]? = nil,
         format: Value? = nil,
         options: [String: Value]? = nil,
@@ -405,6 +452,7 @@ extension Client {
         let params = createGenerateParams(
             model: model,
             prompt: prompt,
+            suffix: suffix,
             images: images,
             format: format,
             options: options,
@@ -422,6 +470,7 @@ extension Client {
     private func createGenerateParams(
         model: Model.ID,
         prompt: String,
+        suffix: String?,
         images: [Data]?,
         format: Value?,
         options: [String: Value]?,
@@ -440,6 +489,9 @@ extension Client {
             "raw": .bool(raw),
         ]
 
+        if let suffix = suffix {
+            params["suffix"] = .string(suffix)
+        }
         if let images = images {
             params["images"] = .array(images.map { .string($0.base64EncodedString()) })
         }
@@ -456,7 +508,7 @@ extension Client {
             params["template"] = .string(template)
         }
         if let context = context {
-            params["context"] = .array(context.map { .double(Double($0)) })
+            params["context"] = .array(context.map { .int($0) })
         }
         if let think = think {
             params["think"] = .bool(think)
@@ -690,6 +742,7 @@ extension Client {
     ///   - model: The name of the model to use for generating embeddings.
     ///   - input: The text to generate embeddings for.
     ///   - truncate: If true, truncates the end of each input to fit within context length. Returns error if false and context length is exceeded.
+    ///   - dimensions: The desired number of dimensions for the output embeddings. Some models support custom dimensions for greater control.
     ///   - options: Additional model parameters as specified in the Modelfile documentation.
     /// - Returns: An `EmbedResponse` containing the generated embeddings and additional information.
     /// - Throws: An error if the request fails or the response cannot be decoded.
@@ -697,6 +750,7 @@ extension Client {
         model: Model.ID,
         input: String,
         truncate: Bool = true,
+        dimensions: Int? = nil,
         options: [String: Value]? = nil
     )
         async throws -> EmbedResponse
@@ -707,6 +761,9 @@ extension Client {
             "truncate": .bool(truncate),
         ]
 
+        if let dimensions = dimensions {
+            params["dimensions"] = .int(dimensions)
+        }
         if let options = options {
             params["options"] = .object(options)
         }
@@ -723,6 +780,7 @@ extension Client {
     ///   - model: The name of the model to use for generating embeddings.
     ///   - inputs: An array of texts to generate embeddings for.
     ///   - truncate: If true, truncates the end of each input to fit within context length. Returns error if false and context length is exceeded.
+    ///   - dimensions: The desired number of dimensions for the output embeddings. Some models support custom dimensions for greater control.
     ///   - options: Additional model parameters as specified in the Modelfile documentation.
     /// - Returns: An `EmbedResponse` containing the generated embeddings for all inputs and additional information.
     /// - Throws: An error if the request fails or the response cannot be decoded.
@@ -730,6 +788,7 @@ extension Client {
         model: Model.ID,
         inputs: [String],
         truncate: Bool = true,
+        dimensions: Int? = nil,
         options: [String: Value]? = nil
     )
         async throws -> EmbedResponse
@@ -740,6 +799,9 @@ extension Client {
             "truncate": .bool(truncate),
         ]
 
+        if let dimensions = dimensions {
+            params["dimensions"] = .int(dimensions)
+        }
         if let options = options {
             params["options"] = .object(options)
         }
@@ -865,29 +927,78 @@ extension Client {
 // MARK: - Create Model
 
 extension Client {
+    /// Represents a progress update during model creation operations.
+    public struct CreateProgress: Codable, Sendable {
+        /// The current status of the creation operation.
+        public let status: String
+
+        public init(status: String) {
+            self.status = status
+        }
+    }
+
     /// Creates a model from a Modelfile.
     ///
     /// - Parameters:
     ///   - name: The name of the model to create.
     ///   - modelfile: The contents of the Modelfile.
     ///   - path: The path to the Modelfile.
+    ///   - quantization: The quantization level to apply (e.g., "q4_0", "q4_1", "q5_0", "q5_1", "q8_0"). If not specified, uses the model's default quantization.
     /// - Returns: `true` if the model was successfully created, otherwise `false`.
     /// - Throws: An error if the request fails.
     public func createModel(
         name: Model.ID,
         modelfile: String? = nil,
-        path: String? = nil
+        path: String? = nil,
+        quantization: String? = nil
     )
         async throws -> Bool
     {
-        var params: [String: Value] = ["name": .string(name.rawValue)]
+        var params: [String: Value] = [
+            "name": .string(name.rawValue),
+            "stream": false
+        ]
         if let modelfile = modelfile {
             params["modelfile"] = .string(modelfile)
         }
         if let path = path {
             params["path"] = .string(path)
         }
+        if let quantization = quantization {
+            params["quantize"] = .string(quantization)
+        }
         return try await fetch(.post, "/api/create", params: params)
+    }
+
+    /// Creates a model from a Modelfile with progress updates.
+    ///
+    /// - Parameters:
+    ///   - name: The name of the model to create.
+    ///   - modelfile: The contents of the Modelfile.
+    ///   - path: The path to the Modelfile.
+    ///   - quantization: The quantization level to apply (e.g., "q4_0", "q4_1", "q5_0", "q5_1", "q8_0"). If not specified, uses the model's default quantization.
+    /// - Returns: An async throwing stream of `CreateProgress` objects containing creation progress information.
+    /// - Throws: An error if the request fails.
+    public func createModelStream(
+        name: Model.ID,
+        modelfile: String? = nil,
+        path: String? = nil,
+        quantization: String? = nil
+    ) -> AsyncThrowingStream<CreateProgress, Swift.Error> {
+        var params: [String: Value] = [
+            "name": .string(name.rawValue),
+            "stream": true
+        ]
+        if let modelfile = modelfile {
+            params["modelfile"] = .string(modelfile)
+        }
+        if let path = path {
+            params["path"] = .string(path)
+        }
+        if let quantization = quantization {
+            params["quantize"] = .string(quantization)
+        }
+        return fetchStream(.post, "/api/create", params: params)
     }
 }
 
@@ -926,6 +1037,25 @@ extension Client {
 // MARK: - Pull Model
 
 extension Client {
+    /// Represents a progress update during model pull operations.
+    public struct PullProgress: Codable, Sendable {
+        /// The current status of the pull operation.
+        public let status: String
+        /// The digest of the layer being downloaded, if applicable.
+        public let digest: String?
+        /// The total size of the layer in bytes, if applicable.
+        public let total: Int64?
+        /// The number of bytes downloaded so far, if applicable.
+        public let completed: Int64?
+
+        public init(status: String, digest: String? = nil, total: Int64? = nil, completed: Int64? = nil) {
+            self.status = status
+            self.digest = digest
+            self.total = total
+            self.completed = completed
+        }
+    }
+
     /// Downloads a model from the Ollama library.
     ///
     /// - Parameters:
@@ -948,11 +1078,51 @@ extension Client {
         ]
         return try await fetch(.post, "/api/pull", params: params)
     }
+
+    /// Downloads a model from the Ollama library with progress updates.
+    ///
+    /// - Parameters:
+    ///   - id: The name of the model to pull.
+    ///   - insecure: If true, allows insecure connections to the library. Only use this if you are pulling from your own library during development.
+    /// - Returns: An async throwing stream of `PullProgress` objects containing download progress information.
+    /// - Throws: An error if the operation fails.
+    ///
+    /// - Note: Cancelled pulls are resumed from where they left off, and multiple calls will share the same download progress.
+    public func pullModelStream(
+        _ id: Model.ID,
+        insecure: Bool = false
+    ) -> AsyncThrowingStream<PullProgress, Swift.Error> {
+        let params: [String: Value] = [
+            "name": .string(id.rawValue),
+            "insecure": .bool(insecure),
+            "stream": true,
+        ]
+        return fetchStream(.post, "/api/pull", params: params)
+    }
 }
 
 // MARK: - Push Model
 
 extension Client {
+    /// Represents a progress update during model push operations.
+    public struct PushProgress: Codable, Sendable {
+        /// The current status of the push operation.
+        public let status: String
+        /// The digest of the layer being uploaded, if applicable.
+        public let digest: String?
+        /// The total size of the layer in bytes, if applicable.
+        public let total: Int64?
+        /// The number of bytes uploaded so far, if applicable.
+        public let completed: Int64?
+
+        public init(status: String, digest: String? = nil, total: Int64? = nil, completed: Int64? = nil) {
+            self.status = status
+            self.digest = digest
+            self.total = total
+            self.completed = completed
+        }
+    }
+
     /// Uploads a model to a model library.
     ///
     /// - Parameters:
@@ -974,6 +1144,27 @@ extension Client {
             "stream": false,
         ]
         return try await fetch(.post, "/api/push", params: params)
+    }
+
+    /// Uploads a model to a model library with progress updates.
+    ///
+    /// - Parameters:
+    ///   - id: The name of the model to push in the form of "namespace/model:tag".
+    ///   - insecure: If true, allows insecure connections to the library. Only use this if you are pushing to your library during development.
+    /// - Returns: An async throwing stream of `PushProgress` objects containing upload progress information.
+    /// - Throws: An error if the operation fails.
+    ///
+    /// - Note: Requires registering for ollama.ai and adding a public key first.
+    public func pushModelStream(
+        _ id: Model.ID,
+        insecure: Bool = false
+    ) -> AsyncThrowingStream<PushProgress, Swift.Error> {
+        let params: [String: Value] = [
+            "name": .string(id.rawValue),
+            "insecure": .bool(insecure),
+            "stream": true,
+        ]
+        return fetchStream(.post, "/api/push", params: params)
     }
 }
 
@@ -1036,15 +1227,78 @@ extension Client {
 
     /// Shows information about a model.
     ///
-    /// - Parameter id: The identifier of the model to show information for.
+    /// - Parameters:
+    ///   - id: The identifier of the model to show information for.
+    ///   - verbose: If true, returns full data for verbose response fields. Defaults to false.
     /// - Returns: A `ShowModelResponse` containing details about the model.
     /// - Throws: An error if the request fails or the response cannot be decoded.
-    public func showModel(_ id: Model.ID) async throws -> ShowModelResponse {
-        let params: [String: Value] = [
+    public func showModel(_ id: Model.ID, verbose: Bool = false) async throws -> ShowModelResponse {
+        var params: [String: Value] = [
             "name": .string(id.rawValue)
         ]
 
+        if verbose {
+            params["verbose"] = .bool(true)
+        }
+
         return try await fetch(.post, "/api/show", params: params)
+    }
+}
+
+// MARK: - Blob Operations
+
+extension Client {
+    /// Checks if a blob exists on the server.
+    ///
+    /// Blobs are binary files used when creating models, such as GGUF files or Safetensors.
+    ///
+    /// - Parameter digest: The SHA256 digest of the blob to check for.
+    /// - Returns: `true` if the blob exists, `false` otherwise.
+    /// - Throws: An error if the request fails.
+    public func checkBlob(digest: String) async throws -> Bool {
+        let url = host.appendingPathComponent("api/blobs/\(digest)")
+        var request = URLRequest(url: url)
+        request.httpMethod = "HEAD"
+
+        if let userAgent {
+            request.addValue(userAgent, forHTTPHeaderField: "User-Agent")
+        }
+
+        let (_, response) = try await session.data(for: request)
+        guard let httpResponse = response as? HTTPURLResponse else {
+            return false
+        }
+
+        return httpResponse.statusCode == 200
+    }
+
+    /// Uploads a blob to the server.
+    ///
+    /// This is used when creating models from local GGUF files or Safetensors.
+    /// The blob must be uploaded before it can be referenced in a Modelfile.
+    ///
+    /// - Parameters:
+    ///   - digest: The SHA256 digest of the blob.
+    ///   - data: The binary data to upload.
+    /// - Returns: `true` if the blob was successfully uploaded, `false` otherwise.
+    /// - Throws: An error if the request fails.
+    public func createBlob(digest: String, data: Data) async throws -> Bool {
+        let url = host.appendingPathComponent("api/blobs/\(digest)")
+        var request = URLRequest(url: url)
+        request.httpMethod = "POST"
+        request.httpBody = data
+        request.addValue("application/octet-stream", forHTTPHeaderField: "Content-Type")
+
+        if let userAgent {
+            request.addValue(userAgent, forHTTPHeaderField: "User-Agent")
+        }
+
+        let (_, response) = try await session.data(for: request)
+        guard let httpResponse = response as? HTTPURLResponse else {
+            return false
+        }
+
+        return (200..<300).contains(httpResponse.statusCode)
     }
 }
 
