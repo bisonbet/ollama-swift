@@ -5,9 +5,18 @@ A Swift client library for interacting with the
 
 ## Requirements
 
-- Swift 5.7+
-- macOS 13+
-- [Ollama](https://ollama.com)
+- Swift 6 / Xcode 16 for the primary manifest (`Package.swift`). Swift 5.7–5.10 toolchains automatically consume `Package@swift-5.swift`, so the library still works on older projects.
+- Supported platforms: macOS 13+, macCatalyst 13+, iOS 16+, tvOS 16+, watchOS 9+, and visionOS 1+.
+- A running [Ollama](https://ollama.com) daemon (0.3 or newer recommended) with the models you plan to call already pulled.
+
+## Features
+
+- Async/await text and chat generation with streaming, suffix-based fill-in-the-middle, JSON/schema formatting, and keep-alive controls.
+- Fully typed tool calling helpers so models such as Llama 3.1+ can invoke your Swift code safely.
+- Embeddings API with single/batch helpers, custom dimensions, and raw metrics.
+- Model lifecycle helpers: listing, pulling, pushing, creating (including quantization), verbose inspection, and progress streaming.
+- Blob management APIs for advanced model builds that need GGUF or safetensors uploads.
+- A drop-in OpenAI-compatible client that speaks `/v1/chat/completions` and `/v1/completions` (both streaming and non-streaming).
 
 ## Installation
 
@@ -1130,6 +1139,15 @@ func routes(_ app: Application) throws {
 3. **Keep models loaded** with `keepAlive` for frequently-used models
 4. **Use local models** to avoid network latency
 5. **Stream responses** for better perceived performance
+
+## Testing
+
+All integration tests live under `Tests/OllamaTests` and exercise the real HTTP API (`ClientTests.swift`, `ModelTests.swift`, etc.). To run them locally:
+
+1. Make sure `ollama serve` is running and `ollama pull llama3.2` has completed (the suite defaults to that model).
+2. Execute `swift test` from the repository root. The `@Suite(.serialized)` attribute keeps network calls orderly, and tests automatically disable themselves on CI via the `CI` environment variable.
+
+These tests cover text/chat generation, streaming, embeddings, tool calling, and model management so you can verify the client end-to-end after making changes.
 
 ## License
 
