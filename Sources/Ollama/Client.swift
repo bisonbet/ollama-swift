@@ -27,16 +27,20 @@ public final class Client: Sendable {
     /// The underlying client session.
     private let session: URLSession
 
-    /// Creates a client with the specified session, host, and user agent.
+    /// Creates a client with the specified host, user agent, and session configuration.
     ///
     /// - Parameters:
-    ///   - session: The underlying client session. Defaults to `URLSession(configuration: .default)`.
     ///   - host: The host URL to use for requests.
     ///   - userAgent: The value for the `User-Agent` header sent in requests, if any. Defaults to `nil`.
+    ///   - sessionConfiguration: The URLSessionConfiguration to use for the underlying session.
+    ///     If `nil`, a default configuration with extended timeouts is used:
+    ///     - `timeoutIntervalForRequest`: 600 seconds (10 minutes)
+    ///     - `timeoutIntervalForResource`: 1800 seconds (30 minutes)
+    ///     Defaults to `nil`.
     public init(
-        session: URLSession = URLSession(configuration: .default),
         host: URL,
-        userAgent: String? = nil
+        userAgent: String? = nil,
+        sessionConfiguration: URLSessionConfiguration? = nil
     ) {
         var host = host
         if !host.path.hasSuffix("/") {
@@ -45,7 +49,15 @@ public final class Client: Sendable {
 
         self.host = host
         self.userAgent = userAgent
-        self.session = session
+
+        let config = sessionConfiguration ?? {
+            let config = URLSessionConfiguration.default
+            config.timeoutIntervalForRequest = 600.0  // 10 minutes
+            config.timeoutIntervalForResource = 1800.0 // 30 minutes
+            return config
+        }()
+
+        self.session = URLSession(configuration: config)
     }
 
     /// Represents errors that can occur during API operations.
